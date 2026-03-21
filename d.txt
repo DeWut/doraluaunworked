@@ -1,0 +1,1479 @@
+--[[
+    Скрипт: Dora Family (Full Edition) — исправленный
+    Платформа: Neverlose (CS:GO Legacy, -insecure)
+    Версия: 3.2
+    Все функции из частей 1-3 объединены, устранены конфликты обработчиков.
+--]]
+
+-- ======================================================================
+-- 1. ГЛОБАЛЬНАЯ ТАБЛИЦА И ЗАЩИТА ОТ КОНФЛИКТОВ
+-- ======================================================================
+dora = dora or {}
+dora.version = "3.2"
+dora.parts = { loaded = 1 }
+
+-- ======================================================================
+-- 2. СОЗДАНИЕ САЙДБАРОВ И ГРУПП
+-- ======================================================================
+ui.sidebar("Dora Family", "dora")
+
+-- Основная группа
+dora.main_group = ui.create("Dora", "Main")
+
+-- Killsay
+dora.killsay_switch = dora.main_group:switch("Killsay Dora quotes", false)
+dora.killsay_delay = dora.main_group:slider("Killsay delay", 0, 15, 0)
+
+-- Статичный клан-тег
+dora.clantag_enable = dora.main_group:switch("Enable Static Clantag", false)
+dora.clantag_preset = dora.main_group:combo("Clantag Preset", {
+    "dora.family", "dora.lover", "dora.guard", "dora.lua", "Custom"
+})
+dora.clantag_custom = dora.main_group:input("Custom Clantag", "your text here")
+dora.clantag_apply = dora.main_group:button("Apply Clantag", function()
+    dora.update_static_frames()
+end)
+dora.clantag_animation = dora.main_group:combo("Animation Type", {
+    "Fade in/out", "Blink", "Scroll left", "Random letters"
+})
+dora.clantag_custom:visibility(dora.clantag_preset:get() == "Custom")
+dora.clantag_preset:set_callback(function()
+    dora.clantag_custom:visibility(dora.clantag_preset:get() == "Custom")
+end)
+
+-- Динамический клан-тег
+dora.dynamic_group = ui.create("Dynamic Clantag", "Main")
+dora.dynamic_enable = dora.dynamic_group:switch("Enable Dynamic Clantag", false)
+dora.dynamic_type = dora.dynamic_group:combo("Dynamic Type", {
+    "Kills per round",
+    "Hits/Misses per round",
+    "Health/Armor",
+    "Kills + Hits/Misses"
+})
+dora.dynamic_animation = dora.dynamic_group:combo("Animation Type", {
+    "None", "Fade in/out", "Blink", "Scroll left", "Random letters"
+})
+
+-- Jumpscout fix
+dora.jumpscout_group = ui.create("Jumpscout Fix", "Main")
+dora.jumpscout_enable = dora.jumpscout_group:switch("Enable SSG-08 jump fix", false)
+
+-- Name Changer
+dora.name_group = ui.create("Name Changer", "Main")
+dora.name_switch = dora.name_group:switch("Enable Name Changer", false)
+dora.name_input = dora.name_group:input("Custom Name", "Dora Fan")
+dora.name_apply = dora.name_group:button("Apply Name", function()
+    if dora.name_switch:get() then
+        local new_name = dora.name_input:get()
+        if new_name ~= "" then
+            common.set_name(new_name)
+            dora.name_changed = true
+        end
+    else
+        if dora.name_changed then
+            common.set_name(dora.original_name)
+            dora.name_changed = false
+        end
+    end
+end)
+dora.original_name = common.get_username()
+dora.name_changed = false
+
+-- Auto Accept
+dora.autoaccept_group = ui.create("Auto Accept", "Main")
+dora.autoaccept_enable = dora.autoaccept_group:switch("Enable Auto Accept Match", false)
+
+-- ======================================================================
+-- 3. ДОПОЛНИТЕЛЬНЫЕ ГРУППЫ (для Anti-Aim, Visuals, Misc, Weapons)
+-- ======================================================================
+dora.aa_group = ui.create("Anti-Aim", "Main")
+dora.fl_group = ui.create("Fake Lag", "Main")
+dora.vis_group = ui.create("Visuals", "Main")
+dora.misc_group = ui.create("Misc", "Main")
+dora.weapon_group = ui.create("Weapons", "Main")
+
+-- ======================================================================
+-- 4. ХИТЛОГ (отдельный сайдбар)
+-- ======================================================================
+ui.sidebar("dora.lua", "user-tag")
+dora.screen = render.screen_size()
+
+dora.hitlog_group = ui.create("Hit logs")
+dora.hitlog_enable = dora.hitlog_group:switch("Master Switch", false)
+dora.hitlog_ref = dora.hitlog_enable:create()
+dora.hitlog_pos = dora.hitlog_ref:selectable("Logs position", {"Left upper side", "Screen middle"})
+dora.hitlog_anim = dora.hitlog_ref:combo("Animation type", {"None", "X +", "X -", "Y +", "Y -"})
+dora.hitlog_color = dora.hitlog_ref:color_picker("Accent color", color(125,125,225,255))
+dora.hitlog_console = dora.hitlog_ref:switch("Console output", true)
+dora.hitlog_chat = dora.hitlog_ref:switch("Chat output for logs", false)
+dora.hitlog_chat_delay = dora.hitlog_ref:slider("Chat output delay", 0, 10, 0, 0.1)
+dora.hitlog_log_aimbot = dora.hitlog_ref:switch("Log aimbot shots", true)
+dora.hitlog_log_damage = dora.hitlog_ref:switch("Log damage dealt", true)
+dora.hitlog_log_purchases = dora.hitlog_ref:switch("Log purchases", false)
+dora.hitlog_title_anim = dora.hitlog_ref:switch("Enable title animation", true)
+dora.hitlog_chat_events = dora.hitlog_ref:selectable("Chat events", {"Aimbot shots", "Damage dealt", "Purchases"})
+
+dora.hitlog = {}
+dora.hitlog_id = 1
+
+local hitgroup_str = {[0]='generic','head','chest','stomach','left arm','right arm','left leg','right leg','neck','generic','gear'}
+
+local function send_to_chat(msg, event_type)
+    if dora.hitlog_chat:get() and dora.hitlog_chat_events:get(event_type) then
+        local delay = dora.hitlog_chat_delay:get()
+        if delay > 0 then
+            utils.execute_after(delay, function()
+                utils.console_exec("say [dora.lua] " .. msg)
+            end)
+        else
+            utils.console_exec("say [dora.lua] " .. msg)
+        end
+    end
+end
+
+-- ======================================================================
+-- 5. ЦИТАТЫ ДОРЫ
+-- ======================================================================
+dora.quotes = {
+    "младшая сестра, ты меня не зли - Младшая сестра, 2019",
+    "снова одна, снова без тебя - Младшая сестра, 2019",
+    "я не буду твоей, ты меня не достоин - Младшая сестра, 2019",
+    "ты задолбал меня игнорить - Младшая сестра, 2019",
+    "дора, дора, дора... - Дорадура, 2019",
+    "закрываю дверь квартиры, отключаю все мобилы - Дорадура, 2019",
+    "недоступна для дебилов, потому что я влюбилась - Дорадура, 2019",
+    "всё потому, что дора — дура - Дорадура, 2019",
+    "я втюрилась, это не лечится - Втюрилась, 2020",
+    "если хочешь, я останусь - Если хочешь, 2020",
+    "осень пьяная в хлам, я пьяная в ноль - Осень пьяная, 2020",
+    "на обратной стороне земли, где ты, там и я - На обратной стороне земли, 2020",
+    "я не хочу быть плохой, но иногда получается - Неидеальные люди (ft. Френдзона), 2020",
+    "барбисайз — это мой размер - Барбисайз (ft. Мэйби Бэйби), 2021",
+    "я боюсь людей, которые улыбаются в глаза - Я боюсь людей, 2022",
+    "loverboy, ты мой мальчик, я твоя игрушка - Loverboy, 2022",
+    "капли дождя на лице, я не плачу, это просто вода - Капли (ft. OG Buda), 2022",
+    "кошки на сердце скребут, пока ты молчишь - Кошки на сердце, 2024",
+    "я зависима от тебя, как от воздуха - Зависима, 2024",
+    "дежавю, мне кажется, мы это уже проходили - Дежавю, 2024",
+    "лучше тебя нет никого, и я ищу, но не могу найти - Лучше тебя, 2024",
+    "реки на щеках, но ты не замечаешь - Реки на щеках, 2024",
+    "прощай, моя любовь, я ухожу навсегда - Прощай, 2024",
+    "пустые слова, как пустой вокзал - Пустые слова, 2024",
+    "моя одежда ещё пахнет тобой, а тебя уже нет - Моя одежда ещё пахнет тобой, 2024",
+    "останься, мне без тебя так холодно - Останься, 2024",
+    "простить себя за то, что любила не того - Простить себя, 2024",
+    "я не ругаюсь матом, я учусь на истфаке - я не ругаюсь матом, ч.1, 2019",
+    "на скейте по городу ночью, я чувствую себя свободной - На скейте, 2019",
+    "пошлю его на... ну ты понял - Пошлю его на..., 2020",
+    "не исправлюсь, я такая, как есть - Не исправлюсь (ft. Мэйби Бэйби), 2020",
+    "не игра, не твоя, не звони мне с утра - не игра, 2021",
+    "сан ларан, сан ларан, мы танцуем до утра - Сан Ларан (ft. Платина), 2021",
+    "трезво мыслить не могу, когда ты рядом - Трезво (Aarne ft. Дора), 2023",
+    "папик, купи мне любви - Папик (ft. Yanix), 2023",
+    "куда уходит детство, в какие города - Куда уходит детство (OST «Пищеблок»), 2021",
+    "розовые волосы, чёрная душа - Розовые волосы, 2019",
+    "нет тебя, нет тебя, я ищу, но не найти - Нет тебя (ft. ЛСП), 2022",
+    "вне зоны доступа твоего сердца - Вне зоны (Yanix ft. Дора), 2022",
+    "поздно говорить «прости», поздно всё вернуть - Поздно (FEDUK ft. Дора), 2021",
+    "карие глаза и улыбка до ушей - карие глаза (Mental affection), 2017",
+    "мальчик, ты снег, растаешь на губах - мальчик, ты снег, 2018",
+    "я твоя, ты мой, мы с тобой одной крови - я твоя, 2018",
+    "мне пусто без тебя, мне грустно без тебя - Мне пусто, 2018",
+    "упрямый ребёнок, я всё делаю назло - Упрямый ребёнок, 2019",
+    "не верю в свои мечты, но верю в нас - Не верю в свои мечты, 2019",
+    "разлетаюсь как дым, исчезаю с утра - разлетаюсь, 2019",
+}
+dora.send_random_quote = function(delay)
+    if #dora.quotes == 0 then return end
+    local idx = math.random(1, #dora.quotes)
+    local quote = dora.quotes[idx]
+    if delay > 0 then
+        utils.execute_after(delay, function()
+            utils.console_exec("say " .. quote)
+        end)
+    else
+        utils.console_exec("say " .. quote)
+    end
+end
+
+-- ======================================================================
+-- 6. ДИНАМИЧЕСКИЙ КЛАН-ТЕГ (данные)
+-- ======================================================================
+dora.round_kills = 0
+dora.round_hits = 0
+dora.round_misses = 0
+
+-- ======================================================================
+-- 7. ГЕНЕРАЦИЯ КАДРОВ ДЛЯ КЛАН-ТЕГОВ
+-- ======================================================================
+dora.generate_frames_fade = function(str)
+    local frames = {""}
+    for i = 1, #str do frames[#frames+1] = str:sub(1,i) end
+    for i = #str-1, 1, -1 do frames[#frames+1] = str:sub(1,i) end
+    return frames
+end
+dora.generate_frames_blink = function(str) return {"", str, "", str} end
+dora.generate_frames_scroll = function(str)
+    local frames = {""}
+    for i = 1, #str do frames[#frames+1] = str:sub(1,i) end
+    for i = 2, #str do frames[#frames+1] = str:sub(i,#str) end
+    frames[#frames+1] = ""
+    return frames
+end
+dora.generate_frames_random = function(str)
+    local indices = {}
+    for i = 1, #str do indices[i] = i end
+    for i = #indices, 2, -1 do
+        local j = math.random(i)
+        indices[i], indices[j] = indices[j], indices[i]
+    end
+    local frames = {""}
+    local current = {}
+    for _, idx in ipairs(indices) do
+        current[idx] = str:sub(idx,idx)
+        local t = {}
+        for i=1,#str do t[i] = current[i] or " " end
+        frames[#frames+1] = table.concat(t)
+    end
+    for i = #indices, 1, -1 do
+        local idx = indices[i]
+        current[idx] = nil
+        local t = {}
+        for j=1,#str do t[j] = current[j] or " " end
+        frames[#frames+1] = table.concat(t)
+    end
+    frames[#frames+1] = ""
+    return frames
+end
+
+dora.static_frames = {}
+dora.last_static_text = ""
+dora.last_static_anim = -1
+dora.update_static_frames = function()
+    local preset = dora.clantag_preset:get()
+    local text = (preset == "Custom") and dora.clantag_custom:get() or preset
+    if text == "" then text = "custom" end
+    local anim = dora.clantag_animation:get()
+    if text == dora.last_static_text and anim == dora.last_static_anim then return end
+    if anim == "Fade in/out" then dora.static_frames = dora.generate_frames_fade(text)
+    elseif anim == "Blink" then dora.static_frames = dora.generate_frames_blink(text)
+    elseif anim == "Scroll left" then dora.static_frames = dora.generate_frames_scroll(text)
+    elseif anim == "Random letters" then dora.static_frames = dora.generate_frames_random(text)
+    else dora.static_frames = {text} end
+    dora.last_static_text = text
+    dora.last_static_anim = anim
+end
+
+dora.dynamic_frames = {}
+dora.last_dynamic_text = ""
+dora.update_dynamic_frames = function()
+    local text = ""
+    local t = dora.dynamic_type:get()
+    if t == "Kills per round" then
+        text = "kills: " .. dora.round_kills
+    elseif t == "Hits/Misses per round" then
+        text = "hits: " .. dora.round_hits .. "/" .. dora.round_misses
+    elseif t == "Health/Armor" then
+        local me = entity.get_local_player()
+        if me then
+            text = "hp: " .. me.m_iHealth .. "/" .. me.m_ArmorValue
+        else
+            text = "hp: 0/0"
+        end
+    elseif t == "Kills + Hits/Misses" then
+        text = "k:" .. dora.round_kills .. " h:" .. dora.round_hits .. "/" .. dora.round_misses
+    else
+        text = ""
+    end
+    if text == dora.last_dynamic_text then return end
+    dora.last_dynamic_text = text
+    local anim = dora.dynamic_animation:get()
+    if anim == "None" then dora.dynamic_frames = {text}
+    elseif anim == "Fade in/out" then dora.dynamic_frames = dora.generate_frames_fade(text)
+    elseif anim == "Blink" then dora.dynamic_frames = dora.generate_frames_blink(text)
+    elseif anim == "Scroll left" then dora.dynamic_frames = dora.generate_frames_scroll(text)
+    elseif anim == "Random letters" then dora.dynamic_frames = dora.generate_frames_random(text)
+    else dora.dynamic_frames = {text} end
+end
+
+dora.last_clantag = nil
+dora.set_clan_tag = function(tag)
+    if tag == dora.last_clantag then return end
+    if not tag then tag = "" end
+    common.set_clan_tag(tag)
+    dora.last_clantag = tag
+end
+dora.get_frame = function(frames)
+    local net = utils.net_channel()
+    if not net then return nil end
+    local latency = net.latency[0] / globals.tickinterval
+    local tick_pred = globals.tickcount + latency
+    local iter = math.floor(math.fmod(tick_pred / 16, #frames + 1) + 1)
+    return frames[iter]
+end
+
+-- ======================================================================
+-- 8. ПЕРЕМЕННЫЕ ДЛЯ JUMPSCOUT
+-- ======================================================================
+dora.autostrafe_ref = ui.find("Miscellaneous", "Main", "Movement", "Air Strafe")
+
+-- ======================================================================
+-- 9. КАСТОМНЫЙ ТРЕШ-ТОК
+-- ======================================================================
+dora.trashtalk_enable = dora.main_group:switch("Custom Trashtalk", false)
+dora.trashtalk_text = dora.main_group:input("Trashtalk text", "text")
+dora.trashtalk_add_name = dora.main_group:switch("Add victim name", false)
+dora.trashtalk_apply = dora.main_group:button("Apply Trashtalk", function()
+    dora.current_trashtalk_text = dora.trashtalk_text:get()
+    dora.current_trashtalk_add_name = dora.trashtalk_add_name:get()
+end)
+dora.current_trashtalk_text = ""
+dora.current_trashtalk_add_name = false
+dora.send_custom_trashtalk = function(victim_name)
+    if not dora.trashtalk_enable:get() then return end
+    if dora.current_trashtalk_text == "" then return end
+    local msg = dora.current_trashtalk_text
+    if dora.current_trashtalk_add_name then
+        msg = msg:gsub("%%s", victim_name)
+    end
+    utils.console_exec("say " .. msg)
+end
+
+-- ======================================================================
+-- 10. УПРАВЛЕНИЕ ВИДИМОСТЬЮ ЭЛЕМЕНТОВ ХИТЛОГА
+-- ======================================================================
+local function hitlog_visibility()
+    local enabled = dora.hitlog_enable:get()
+    dora.hitlog_pos:visibility(enabled)
+    dora.hitlog_anim:visibility(enabled and dora.hitlog_pos:get("Screen middle"))
+    dora.hitlog_color:visibility(enabled and dora.hitlog_pos:get() ~= 0)
+    dora.hitlog_console:visibility(enabled)
+    dora.hitlog_chat:visibility(enabled)
+    dora.hitlog_chat_delay:visibility(enabled and dora.hitlog_chat:get())
+    dora.hitlog_log_aimbot:visibility(enabled)
+    dora.hitlog_log_damage:visibility(enabled)
+    dora.hitlog_log_purchases:visibility(enabled)
+    dora.hitlog_title_anim:visibility(enabled)
+    dora.hitlog_chat_events:visibility(enabled and dora.hitlog_chat:get())
+end
+
+-- ======================================================================
+-- 11. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОТРИСОВКИ
+-- ======================================================================
+dora.gradient_text = function(r1,g1,b1,a1, r2,g2,b2,a2, text)
+    local out = ''
+    local len = #text-1
+    local rinc = (r2-r1)/len
+    local ginc = (g2-g1)/len
+    local binc = (b2-b1)/len
+    local ainc = (a2-a1)/len
+    for i=1, len+1 do
+        out = out .. ('\a%02x%02x%02x%02x%s'):format(r1,g1,b1,a1, text:sub(i,i))
+        r1,g1,b1,a1 = r1+rinc, g1+ginc, b1+binc, a1+ainc
+    end
+    return out
+end
+
+-- ======================================================================
+-- 12. ANTI-AIM BUILDER (часть 2)
+-- ======================================================================
+dora.conditions = {"Global", "Standing", "Running", "Walking", "Crouching", "Crouch Moving", "Air", "Air Crouching", "Fakelag"}
+
+dora.aa_builder = {}
+for i = 1, #dora.conditions do
+    dora.aa_builder[i] = {
+        enable = dora.aa_group:checkbox('Override \v' .. dora.conditions[i]),
+        pitch = dora.aa_group:combobox("\v›\r Pitch", {"Disabled", "Default", "Up", "Down", "Minimal", "Random"}),
+        yawbase = dora.aa_group:combobox("\v›\r Yaw Base", {"At targets", "Local View"}),
+        yawtype = dora.aa_group:combobox("\v›\r Yaw", {"Switch", "Tickount"}),
+        delay = dora.aa_group:slider("\v›\r Tickount", 1, 14, 1, true),
+        left = dora.aa_group:slider("\v›\r Min. Offset", -180, 180, 0, true, "°"),
+        right = dora.aa_group:slider("\v›\r Max. Offset", -180, 180, 0, true, "°"),
+        modifier = dora.aa_group:combobox("\v›\r Modifier", {"Disabled", "Offset", "Center", "Skitter"}),
+        degree = dora.aa_group:slider("\n", -180, 180, 0, true, "°"),
+        bodyyaw = dora.aa_group:combobox("\v›\r Desync", {"Disabled", "Static", "Jitter", "Opposite"}),
+        bodyslide = dora.aa_group:slider("\n", -180, 180, 0, true, "°"),
+        force_defensive = dora.aa_group:checkbox("\v›\r Defensive \vAnti-aim"),
+        def_pitch = dora.aa_group:combobox("\v›\r Pitch", {"Disabled", "Default", "Up", "Down", "Minimal", "Customize"}),
+        pitch_value = dora.aa_group:slider("\v›\r Amount", -89, 89, 0, true, "°", 1),
+        def_yaw = dora.aa_group:combobox("\v›\r Yaw", {"Disabled", "Spin", "Sideways", "Switch", "Random", "Customize"}),
+        def_yawvalue = dora.aa_group:slider("\v›\r Speed", -180, 180, 0, true, "°", 1),
+        def_left = dora.aa_group:slider("\v›\r Min. Offset", -180, 180, 0, true, "°"),
+        def_right = dora.aa_group:slider("\v›\r Max. Offset", -180, 180, 0, true, "°"),
+        def_yawslider = dora.aa_group:slider("\v›\r Min", -180, 180, 0, true, "°", 1),
+        def_yawslider2 = dora.aa_group:slider("\v›\r Max", -180, 180, 0, true, "°", 1),
+    }
+end
+
+dora.aa_features = {
+    condition = dora.aa_group:combobox("\vCurrent \vState", dora.conditions),
+    features = dora.aa_group:multiselect("\v› \rType", {"Safe Function", "Avoid Backstab", "Edge on FD", "Useless Function"}),
+    take = dora.aa_group:multiselect("\v› \rEssential", {"Freestanding", "Manual Yaw"}),
+    safe = dora.aa_group:multiselect("\v› \rSafe Function", {"Knife", "Zeus", "Heigh Distance", "Standing", "Crouching", "Air Crouching"}),
+    useless = dora.aa_group:multiselect("\v› \rUseless Function", {"Spin on Warm-up", "Spin no Enemies"}),
+    key_freestand = dora.aa_group:hotkey('\v›\r Freestanding'),
+    disablers = dora.aa_group:multiselect("\n", dora.conditions),
+    key_left = dora.aa_group:hotkey('\v›\r Manual Left'),
+    key_right = dora.aa_group:hotkey('\v›\r Manual Right'),
+    key_forward = dora.aa_group:hotkey('\v›\r Manual Forward'),
+    key_reset = dora.aa_group:hotkey('\v›\r Manual Reset'),
+    onshot_mode = dora.aa_group:combo("\v›\r On Shot Mode", {"None", "Overlap", "Opposite"}),
+    antibackstab = dora.aa_group:switch("Anti-backStab", false),
+    ideal_tick = dora.aa_group:switch("IdealTick (AutoPeek charge)", false),
+}
+
+-- ======================================================================
+-- 13. FAKE LAG
+-- ======================================================================
+dora.fakelag = {
+    amount = dora.fl_group:combobox("Amount", {"Dynamic", "Maximum", "Fluctuate"}),
+    variance = dora.fl_group:slider("Variance", 0, 100, 0, true, "%", 1),
+    limit = dora.fl_group:slider("Limit", 1, 15, 13, true, "t", 1),
+    silent_shots = dora.fl_group:switch("Silent Shots", false),
+}
+
+-- ======================================================================
+-- 14. VISUALS (часть 2)
+-- ======================================================================
+dora.vis_crosshair = dora.vis_group:switch("Custom Crosshair", false)
+dora.vis_crosshair_color = dora.vis_group:color_picker("Crosshair color", color(255,255,255))
+dora.vis_arrows = dora.vis_group:switch("Manual Arrows", false)
+dora.vis_arrows_style = dora.vis_group:combo("Arrow Style", {"Module1", "Module2", "Module3"})
+dora.vis_arrows_color = dora.vis_group:color_picker("Arrows color", color(255,255,255))
+dora.vis_dt_indicator = dora.vis_group:switch("DT Indicator", false)
+dora.vis_dt_color = dora.vis_group:color_picker("DT color", color(255,255,255))
+dora.vis_fl_indicator = dora.vis_group:switch("FL Indicator", false)
+dora.vis_fl_y = dora.vis_group:slider("FL Indicator Y", 0, 2000, 0)
+dora.vis_scope = dora.vis_group:switch("Custom Scope", false)
+dora.vis_scope_color = dora.vis_group:color_picker("Scope color", color(255,255,255))
+dora.vis_scope_inverted = dora.vis_group:switch("Invert Scope", false)
+dora.vis_scope_length = dora.vis_group:slider("Scope length", 0, 100, 20)
+dora.vis_scope_offset = dora.vis_group:slider("Scope offset", 0, 100, 5)
+dora.vis_watermark = dora.vis_group:switch("Watermark", false)
+dora.vis_watermark_style = dora.vis_group:combo("Watermark style", {"Classic", "Fade", "Gradient"})
+dora.vis_watermark_color = dora.vis_group:color_picker("Watermark color", color(255,255,255))
+dora.vis_watermark_alpha = dora.vis_group:slider("Watermark Alpha", 0, 255, 75)
+dora.vis_keybinds = dora.vis_group:switch("Keybinds Panel", false)
+dora.vis_spectators = dora.vis_group:switch("Spectators Panel", false)
+dora.vis_left_binds = dora.vis_group:switch("Left Binds Panel", false)
+dora.vis_bloom = dora.vis_group:switch("HDR Bloom", false)
+dora.vis_bloom_scale = dora.vis_group:slider("Bloom Scale", -1, 500, -1, 0.01, nil, nil, {[-1]="Off"})
+dora.vis_bloom_exposure = dora.vis_group:slider("Bloom Exposure", -1, 2000, -1, 0.001, nil, nil, {[-1]="Off"})
+dora.vis_bloom_model = dora.vis_group:slider("Model Ambient", -1, 1000, -1, 0.05, nil, nil, {[-1]="Off"})
+dora.vis_viewmodel = dora.vis_group:switch("Custom Viewmodel", false)
+dora.vis_vm_fov = dora.vis_group:slider("Viewmodel FOV", 0, 160, 70, 0.1)
+dora.vis_vm_x = dora.vis_group:slider("Viewmodel X", -200, 200, 0, 0.1)
+dora.vis_vm_y = dora.vis_group:slider("Viewmodel Y", -200, 200, 0, 0.1)
+dora.vis_vm_z = dora.vis_group:slider("Viewmodel Z", -200, 200, 0, 0.1)
+dora.vis_vm_aspect = dora.vis_group:slider("Viewmodel Aspect", 0, 50, 0, 0.1)
+dora.vis_viewmodel_apply = dora.vis_group:button("Apply Viewmodel", function() dora.apply_viewmodel() end)
+dora.vis_thirdperson = dora.vis_group:switch("Third Person", false)
+dora.vis_thirdperson_dist = dora.vis_group:slider("Distance", 30, 200, 70, 1)
+dora.vis_thirdperson_anim = dora.vis_group:switch("Animation", false)
+dora.vis_aspect = dora.vis_group:switch("Aspect Ratio", false)
+dora.vis_aspect_value = dora.vis_group:slider("Value", 0, 200, 177, 0.01, nil, {[0]="Disabled",[133]="4:3",[160]="16:9",[170]="16:10"})
+dora.vis_anim = dora.vis_group:switch("Animation Breakers", false)
+dora.vis_anim_ground = dora.vis_group:combo("Ground", {"Static", "Jitter"})
+dora.vis_anim_value = dora.vis_group:slider("Value", 0, 10, 5)
+dora.vis_anim_air = dora.vis_group:combo("In Air", {"Off", "Static"})
+dora.vis_anim_addons = dora.vis_group:multiselect("Addons", {"Body Lean", "Smoothing", "Earthquake"})
+dora.vis_anim_body_lean = dora.vis_group:slider("Body Lean", 0, 100, 0, true, "%", 0.01)
+dora.vis_anim_eq_state = dora.vis_group:multiselect("Earthquake state", {"Running", "Air", "Air-C"})
+dora.vis_anim_eq_indexes = dora.vis_group:multiselect("Indexes", {6,9,10})
+dora.vis_anim_eq_magnitude = dora.vis_group:slider("Magnitude", 0, 100, 0, 0.01)
+dora.vis_anim_eq_speed = dora.vis_group:slider("Speed", 0, 10, 2)
+
+-- ======================================================================
+-- 15. MISC (часть 2)
+-- ======================================================================
+dora.misc_fast_ladder = dora.misc_group:switch("Fast Ladder", false)
+dora.misc_jump_scout = dora.misc_group:switch("Air Stop (Jump Scout)", false)
+dora.misc_jump_hotkey = dora.misc_group:hotkey("Air Stop Hotkey", 0)
+dora.misc_jump_mode = dora.misc_group:selectable("Jump Mode", {"Distance", "Hitchance"})
+dora.misc_jump_distance = dora.misc_group:slider("Jump Distance", 0, 1350, 0)
+dora.misc_jump_hc = dora.misc_group:slider("Jump Hitchance", 0, 100, 0)
+dora.misc_prediction = dora.misc_group:switch("Prediction System", false)
+dora.misc_pred_hotkey = dora.misc_group:hotkey("Prediction Hotkey", 0)
+dora.misc_pred_mode = dora.misc_group:slider("Prediction Mode", 1, 3, 0, 1, nil, {[1]="Wingman",[2]="Competitive",[3]="Experience"})
+dora.misc_force_safety = dora.misc_group:switch("Force Baim/Safe per weapon", false)
+dora.misc_force_weapon = dora.misc_group:combo("Weapon", {"AWP", "SSG-08", "SCAR20", "G3SG1", "Deagle / Revolver", "Glock", "Usp", "Five Seven", "Tec-9"})
+dora.misc_force_baim_hp = dora.misc_group:slider("Baim HP", 0, 100, 0)
+dora.misc_force_safe_hp = dora.misc_group:slider("Safe HP", 0, 100, 0)
+dora.misc_disable_buybot = dora.misc_group:switch("Disable buybot when low money", false)
+dora.misc_buybot_money = dora.misc_group:slider("Money limit", 0, 16000, 3200)
+dora.misc_unsafe_charge = dora.misc_group:switch("Allow Unsafe Charge", false)
+dora.misc_fixed_hideshots = dora.misc_group:switch("Fixed Hideshots", false)
+
+-- ======================================================================
+-- 16. WEAPON-SPECIFIC HITCHANCE (часть 2)
+-- ======================================================================
+dora.weapon_hc_enable = dora.weapon_group:switch("Override Hitchance per weapon", false)
+dora.weapon_hc_apply = dora.weapon_group:button("Apply HC", function() dora.apply_weapon_hc() end)
+dora.weapon_auto_hit = dora.weapon_group:slider("[Auto] Hit Chance", 0, 100, 0)
+dora.weapon_auto_noscope = dora.weapon_group:slider("[Auto] NoScope HC", 0, 100, 0)
+dora.weapon_auto_air = dora.weapon_group:slider("[Auto] Air HC", 0, 100, 0)
+dora.weapon_awp_hit = dora.weapon_group:slider("[AWP] Hit Chance", 0, 100, 0)
+dora.weapon_awp_noscope = dora.weapon_group:slider("[AWP] NoScope HC", 0, 100, 0)
+dora.weapon_awp_air = dora.weapon_group:slider("[AWP] Air HC", 0, 100, 0)
+dora.weapon_scout_hit = dora.weapon_group:slider("[Scout] Hit Chance", 0, 100, 0)
+dora.weapon_scout_noscope = dora.weapon_group:slider("[Scout] NoScope HC", 0, 100, 0)
+dora.weapon_scout_air = dora.weapon_group:slider("[Scout] Air HC", 0, 100, 0)
+dora.weapon_shotgun_hit = dora.weapon_group:slider("[Shotguns] Hit Chance", 0, 100, 0)
+dora.weapon_shotgun_noscope = dora.weapon_group:slider("[Shotguns] NoScope HC", 0, 100, 0)
+dora.weapon_shotgun_air = dora.weapon_group:slider("[Shotguns] Air HC", 0, 100, 0)
+
+-- ======================================================================
+-- 17. ЗВУКИ (часть 2)
+-- ======================================================================
+local sound_folder = common.get_game_directory() .. "\\sound"
+if not files.exists(sound_folder) then
+    files.create_directory(sound_folder)
+end
+
+local function play_sound(file, volume)
+    if not file or file == "" then return end
+    local sound_path = sound_folder .. "\\" .. file
+    if not files.exists(sound_path) then return end
+    local sound_func = utils.get_vfunc("engine.dll", "IEngineSoundClient003", 12, "void*(__thiscall*)(void*, const char*, float, int, int, float)")
+    if sound_func then
+        pcall(sound_func, file, volume / 100, 100, 0, 0)
+    end
+end
+
+dora.vis_sound = dora.vis_group:switch("Event sound", false)
+dora.vis_sound_miss = dora.vis_group:input("Missed shot - file", "miss.wav")
+dora.vis_sound_taser = dora.vis_group:input("Taser kill - file", "taser.wav")
+dora.vis_sound_volume = dora.vis_group:slider("Volume", 0, 100, 70, true, "%", 1)
+dora.vis_sound_open = dora.vis_group:button("Open sound folder", function()
+    local path = common.get_game_directory() .. "\\sound"
+    if files.exists(path) then
+        os.execute('explorer "' .. path .. '"')
+    else
+        print("[Dora] Sound folder not found")
+    end
+end, true)
+
+dora.vis_sound_miss:visibility(dora.vis_sound:get())
+dora.vis_sound_taser:visibility(dora.vis_sound:get())
+dora.vis_sound_volume:visibility(dora.vis_sound:get())
+dora.vis_sound_open:visibility(dora.vis_sound:get())
+dora.vis_sound:set_callback(function()
+    local state = dora.vis_sound:get()
+    dora.vis_sound_miss:visibility(state)
+    dora.vis_sound_taser:visibility(state)
+    dora.vis_sound_volume:visibility(state)
+    dora.vis_sound_open:visibility(state)
+end, true)
+
+-- ======================================================================
+-- 18. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (часть 2)
+-- ======================================================================
+function dora.get_player_state()
+    local lp = entity.get_local_player()
+    if not lp then return "Global" end
+    local vel = lp.m_vecVelocity
+    local speed = math.sqrt(vel.x^2 + vel.y^2)
+    local flags = lp.m_fFlags
+    local ground = bit.band(flags, 1) == 1
+    local ducked = lp.m_flDuckAmount > 0.7
+    local slowwalk = false
+    local sw_elem = ui.find("Aimbot", "Anti Aim", "Misc", "Slow Walk")
+    if sw_elem then slowwalk = sw_elem:get() end
+    if not ground and ducked then return "Air Crouching"
+    elseif not ground then return "Air"
+    elseif ducked and speed > 10 then return "Crouch Moving"
+    elseif ducked then return "Crouching"
+    elseif ground and slowwalk and speed > 10 then return "Walking"
+    elseif ground and speed > 5 then return "Running"
+    elseif ground then return "Standing"
+    else return "Global" end
+end
+
+function dora.desync_side()
+    local lp = entity.get_local_player()
+    if not lp then return 1 end
+    local body = entity.get_prop(lp, "m_flPoseParameter", 11) * 120 - 60
+    return body > 0 and 1 or -1
+end
+
+function dora.smooth_jitter(left, right, speed)
+    return (math.floor(globals.curtime * 10000) % 2 == 0) and left or right
+end
+
+-- ======================================================================
+-- 19. ОСНОВНЫЕ ФУНКЦИИ (apply_aa, apply_fakelag, visual render и т.д.)
+-- ======================================================================
+function dora.apply_aa()
+    local lp = entity.get_local_player()
+    if not lp then return end
+    local state = dora.get_player_state()
+    local id = 1
+    for i, cond in ipairs(dora.conditions) do
+        if state == cond and dora.aa_builder[i].enable:get() then
+            id = i
+            break
+        end
+    end
+
+    local builder = dora.aa_builder[id]
+    local dt_elem = ui.find("Aimbot", "Ragebot", "Main", "Double Tap", "Enabled")
+    local dt_active = dt_elem and dt_elem:get()
+
+    -- Defensive mode
+    if builder.force_defensive:get() and dt_active then
+        local hidden = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Hidden")
+        if hidden then hidden:override(true) end
+        local def_pitch = builder.def_pitch:get()
+        local pitch_val = 0
+        if def_pitch == "Default" then pitch_val = 89
+        elseif def_pitch == "Up" then pitch_val = -89
+        elseif def_pitch == "Down" then pitch_val = 89
+        elseif def_pitch == "Minimal" then pitch_val = 45
+        elseif def_pitch == "Customize" then pitch_val = builder.pitch_value:get()
+        end
+        local hidden_pitch = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Hidden pitch")
+        if hidden_pitch then hidden_pitch:override(pitch_val) end
+
+        local def_yaw = builder.def_yaw:get()
+        local yaw_val = 0
+        local flick = (math.floor(globals.curtime * 10000) % 2) == 0
+        if def_yaw == "Spin" then
+            yaw_val = (globals.tickcount * builder.def_yawvalue:get()) % 360 - 180
+        elseif def_yaw == "Sideways" then
+            yaw_val = flick and 89 or -89
+        elseif def_yaw == "Switch" then
+            yaw_val = flick and builder.def_left:get() or builder.def_right:get()
+        elseif def_yaw == "Random" then
+            yaw_val = math.random(-180,180)
+        elseif def_yaw == "Customize" then
+            yaw_val = math.random(builder.def_yawslider:get(), builder.def_yawslider2:get())
+        end
+        local hidden_yaw = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Hidden yaw")
+        if hidden_yaw then hidden_yaw:override(yaw_val) end
+
+        local lag_opt = ui.find("Aimbot", "Ragebot", "Main", "Double Tap", "Lag Options")
+        if lag_opt then lag_opt:override("Always On") end
+        return
+    end
+
+    -- Обычный AA
+    local hidden = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Hidden")
+    if hidden then hidden:override(false) end
+    local lag_opt = ui.find("Aimbot", "Ragebot", "Main", "Double Tap", "Lag Options")
+    if lag_opt then lag_opt:override() end
+
+    local pitch = builder.pitch:get()
+    local pitch_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Pitch")
+    if pitch_elem then
+        if pitch == "Disabled" then pitch_elem:override("Off")
+        else pitch_elem:override(pitch) end
+    end
+
+    local yawbase_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Base")
+    if yawbase_elem then yawbase_elem:override(builder.yawbase:get()) end
+
+    local yaw_type = builder.yawtype:get()
+    local yaw_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw")
+    local offset_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw", "Offset")
+    if yaw_elem and offset_elem then
+        if yaw_type == "Switch" then
+            yaw_elem:override("180")
+            local side = dora.desync_side()
+            offset_elem:override(side == -1 and builder.left:get() or builder.right:get())
+        elseif yaw_type == "Tickount" then
+            yaw_elem:override("180")
+            local yaw = dora.smooth_jitter(builder.left:get(), builder.right:get(), builder.delay:get())
+            offset_elem:override(yaw)
+        else
+            yaw_elem:override("Off")
+        end
+    end
+
+    local mod = builder.modifier:get()
+    local yaw_mod = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Modifier")
+    local mod_val = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Modifier", "Value")
+    if yaw_mod and mod_val then
+        if mod == "Disabled" then yaw_mod:override("Off")
+        else
+            yaw_mod:override(mod)
+            mod_val:override(builder.degree:get())
+        end
+    end
+
+    local body = builder.bodyyaw:get()
+    local body_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Body Yaw")
+    local left_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Left Limit")
+    local right_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Body Yaw", "Right Limit")
+    if body_elem then
+        if body == "Disabled" then body_elem:override("Off")
+        else
+            body_elem:override(body)
+            if body == "Jitter" and left_elem and right_elem then
+                left_elem:override(builder.left:get())
+                right_elem:override(builder.right:get())
+            elseif body == "Static" and left_elem and right_elem then
+                left_elem:override(builder.bodyslide:get())
+                right_elem:override(builder.bodyslide:get())
+            end
+        end
+    end
+
+    local fs_elem = ui.find("Aimbot", "Anti Aim", "Angles", "Freestanding")
+    local fs_mode = ui.find("Aimbot", "Anti Aim", "Angles", "Freestanding", "Mode")
+    if fs_elem then
+        if dora.aa_features.take:get("Freestanding") and dora.aa_features.key_freestand:get() then
+            local state = dora.get_player_state()
+            if not dora.aa_features.disablers:get(state) then
+                fs_elem:override(true)
+                if fs_mode then fs_mode:override("Always on") end
+            else
+                fs_elem:override(false)
+            end
+        else
+            fs_elem:override(false)
+        end
+    end
+
+    if dora.aa_features.take:get("Manual Yaw") then
+        local manual = nil
+        if dora.aa_features.key_left:get() then manual = -90
+        elseif dora.aa_features.key_right:get() then manual = 90
+        elseif dora.aa_features.key_forward:get() then manual = 180
+        elseif dora.aa_features.key_reset:get() then manual = 0 end
+        if manual and yaw_elem and offset_elem then
+            yaw_elem:override("180")
+            local base = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Base")
+            if base then base:override("Local View") end
+            offset_elem:override(manual)
+            if hidden then hidden:override(false) end
+        end
+    end
+
+    local os_mode = dora.aa_features.onshot_mode:get()
+    if os_mode == "Overlap" then
+        if AntiAim and AntiAim.OverrideDesyncOnShot then AntiAim.OverrideDesyncOnShot(3) end
+    elseif os_mode == "Opposite" then
+        if AntiAim and AntiAim.OverrideDesyncOnShot then AntiAim.OverrideDesyncOnShot(4) end
+    end
+
+    if dora.aa_features.antibackstab:get() then
+        local players = entity.get_players(true)
+        local lp_origin = lp:get_origin()
+        for _, enemy in ipairs(players) do
+            local weapon = enemy:get_player_weapon()
+            if weapon and entity.get_classname(weapon) == "CKnife" then
+                local dist = lp_origin:dist(enemy:get_origin())
+                if dist <= 250 and yaw_elem and offset_elem then
+                    yaw_elem:override("180")
+                    local base = ui.find("Aimbot", "Anti Aim", "Angles", "Yaw Base")
+                    if base then base:override("At targets") end
+                    offset_elem:override(180)
+                    break
+                end
+            end
+        end
+    end
+
+    local auto_peek = ui.find("Miscellaneous", "Main", "Movement", "Auto Peek")
+    if dora.aa_features.ideal_tick:get() and dt_elem and dt_elem:get() then
+        if auto_peek then auto_peek:override(true) end
+        if Exploits and Exploits.ForceCharge then Exploits.ForceCharge() end
+    else
+        if auto_peek then auto_peek:override() end
+    end
+end
+
+function dora.apply_fakelag()
+    local fl_enabled = ui.find("Aimbot", "Anti Aim", "Fake Lag", "Enabled")
+    local fl_amount = ui.find("Aimbot", "Anti Aim", "Fake Lag", "Amount")
+    local fl_variance = ui.find("Aimbot", "Anti Aim", "Fake Lag", "Variance")
+    local fl_limit = ui.find("Aimbot", "Anti Aim", "Fake Lag", "Limit")
+    if fl_enabled then fl_enabled:override(true) end
+    if fl_amount then fl_amount:override(dora.fakelag.amount:get()) end
+    if fl_variance then fl_variance:override(dora.fakelag.variance:get()) end
+    if fl_limit then fl_limit:override(dora.fakelag.limit:get()) end
+    if dora.fakelag.silent_shots:get() and Exploits and Exploits.OverrideSilentShots then
+        Exploits.OverrideSilentShots(true)
+    end
+end
+
+-- ======================================================================
+-- 20. ВИЗУАЛЬНЫЕ ФУНКЦИИ (рендер)
+-- ======================================================================
+function dora.draw_crosshair()
+    if not dora.vis_crosshair:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local col = dora.vis_crosshair_color:get()
+    render.line(x/2-10, y/2, x/2-4, y/2, col.r, col.g, col.b, 255)
+    render.line(x/2+4, y/2, x/2+10, y/2, col.r, col.g, col.b, 255)
+    render.line(x/2, y/2-10, x/2, y/2-4, col.r, col.g, col.b, 255)
+    render.line(x/2, y/2+4, x/2, y/2+10, col.r, col.g, col.b, 255)
+end
+
+function dora.draw_arrows()
+    if not dora.vis_arrows:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local col = dora.vis_arrows_color:get()
+    local style = dora.vis_arrows_style:get()
+    local left_active = dora.aa_features.key_left:get()
+    local right_active = dora.aa_features.key_right:get()
+    if style == 0 then
+        if left_active then render.text(x/2-50, y/2, col.r, col.g, col.b, 255, "b", 0, "◀") end
+        if right_active then render.text(x/2+50, y/2, col.r, col.g, col.b, 255, "b", 0, "▶") end
+    elseif style == 1 then
+        if left_active then render.text(x/2-40, y/2-10, col.r, col.g, col.b, 255, "b", 0, "(") end
+        if right_active then render.text(x/2+40, y/2-10, col.r, col.g, col.b, 255, "b", 0, ")") end
+    elseif style == 2 then
+        if left_active then render.text(x/2-55, y/2-10, col.r, col.g, col.b, 255, "b", 0, "<<") end
+        if right_active then render.text(x/2+45, y/2-10, col.r, col.g, col.b, 255, "b", 0, ">>") end
+    end
+end
+
+function dora.draw_dt_indicator()
+    if not dora.vis_dt_indicator:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local dt_elem = ui.find("Aimbot", "Ragebot", "Main", "Double Tap")
+    local dt_active = dt_elem and dt_elem:get()
+    if dt_active then
+        local col = dora.vis_dt_color:get()
+        local charge = (Exploits and Exploits.GetCharge and Exploits.GetCharge()) or 0
+        local text = "DT: " .. (charge == 1 and "Ready" or "Wait")
+        render.text(x-200, y-50, col.r, col.g, col.b, 255, nil, 0, text)
+    end
+end
+
+function dora.draw_fl_indicator()
+    if not dora.vis_fl_indicator:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local fl = globals.choked_commands
+    local text = "FL: " .. fl
+    local col = dora.vis_dt_color:get()
+    render.text(x-200, dora.vis_fl_y:get(), col.r, col.g, col.b, 255, nil, 0, text)
+end
+
+function dora.draw_scope()
+    if not dora.vis_scope:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    if entity.get_prop(lp, "m_bIsScoped") ~= 1 then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local col = dora.vis_scope_color:get()
+    local len = dora.vis_scope_length:get()
+    local off = dora.vis_scope_offset:get()
+    local inv = dora.vis_scope_inverted:get()
+    local col1 = inv and col or color(col.r,col.g,col.b,50)
+    local col2 = inv and color(col.r,col.g,col.b,50) or col
+    render.line(x/2-len-off, y/2, x/2-off, y/2, col1.r, col1.g, col1.b, col1.a)
+    render.line(x/2+len+off, y/2, x/2+off, y/2, col1.r, col1.g, col1.b, col1.a)
+    render.line(x/2, y/2+len+off, x/2, y/2+off, col2.r, col2.g, col2.b, col2.a)
+    render.line(x/2, y/2-len-off, x/2, y/2-off, col2.r, col2.g, col2.b, col2.a)
+end
+
+function dora.draw_watermark()
+    if not dora.vis_watermark:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local ping = 0
+    local net = utils.net_channel()
+    if net then ping = net.latency[0] * 1000 end
+    local text = "Dora Family | delay: " .. math.floor(ping) .. "ms | " .. common.get_username()
+    local w = render.measure_text(1, nil, text).x
+    local alpha = dora.vis_watermark_alpha:get()
+    local style = dora.vis_watermark_style:get()
+    local col = dora.vis_watermark_color:get()
+    local bg_col = color(0,0,0,alpha/255)
+    if style == 0 then
+        render.rect(x-w-10, 10, w+20, 20, bg_col.r, bg_col.g, bg_col.b, bg_col.a)
+        render.rect(x-w-10, 8, w+20, 2, col.r, col.g, col.b, 255)
+    elseif style == 1 then
+        render.gradient(x-w-10, 10, w+20, 20, bg_col, bg_col, color(0,0,0,0), color(0,0,0,0))
+        render.gradient(x-w-10, 8, (w+20)/2, 2, color(0,0,0,0), col, color(0,0,0,0), col)
+        render.gradient(x-w-10+(w+20)/2, 8, (w+20)/2, 2, col, color(0,0,0,0), col, color(0,0,0,0))
+    elseif style == 2 then
+        render.gradient(x-w-10, 8, (w+20)/2, 2, color(55/255,177/255,218/255), color(203/255,70/255,205/255), color(55/255,177/255,218/255), color(203/255,70/255,205/255))
+        render.gradient(x-w-10+(w+20)/2, 8, (w+20)/2, 2, color(203/255,70/255,205/255), color(236/255,255/255,65/255), color(203/255,70/255,205/255), color(236/255,255/255,65/255))
+    end
+    render.text(x-w-5, 12, 255,255,255, 255, nil, 0, text)
+end
+
+function dora.draw_keybinds()
+    if not dora.vis_keybinds:get() then return end
+    -- В neverlose нет прямого доступа к биндам, поэтому панель пуста
+end
+
+function dora.draw_spectators()
+    if not dora.vis_spectators:get() then return end
+    -- В neverlose нет прямого API для списка зрителей
+end
+
+function dora.draw_left_binds()
+    if not dora.vis_left_binds:get() then return end
+    local x,y = render.screen_size().x, render.screen_size().y
+    local y_base = y/1.33 - 120
+    local idx = 0
+    local dt_elem = ui.find("Aimbot", "Ragebot", "Main", "Double Tap")
+    if dt_elem and dt_elem:get() then
+        local col = color(132/255,195/255,16/255)
+        render.text(10, y_base + 26*idx, col.r, col.g, col.b, 255, nil, 0, "DT")
+        idx = idx + 1
+    end
+    local hs_elem = ui.find("Aimbot", "Ragebot", "Main", "Hide Shots")
+    if hs_elem and hs_elem:get() then
+        render.text(10, y_base + 26*idx, 255,255,255, 255, nil, 0, "HS")
+        idx = idx + 1
+    end
+    local fd_elem = ui.find("Aimbot", "Anti Aim", "Misc", "Fake Duck")
+    if fd_elem and fd_elem:get() then
+        render.text(10, y_base + 26*idx, 255,255,255, 255, nil, 0, "FD")
+        idx = idx + 1
+    end
+end
+
+function dora.apply_bloom()
+    if not dora.vis_bloom:get() then
+        cvar.mat_bloom_scalefactor_scalar:float()
+        cvar.mat_exposure_center_scale:float()
+        cvar.r_modelAmbientMin:float(0.05)
+        return
+    end
+    local scale = dora.vis_bloom_scale:get()
+    local exp = dora.vis_bloom_exposure:get()
+    local ambient = dora.vis_bloom_model:get()
+    if scale ~= -1 then cvar.mat_bloom_scalefactor_scalar:float(scale * 0.01) end
+    if exp ~= -1 then cvar.mat_exposure_center_scale:float(exp * 0.001) end
+    if ambient ~= -1 then cvar.r_modelAmbientMin:float(ambient * 0.05) end
+end
+
+function dora.apply_viewmodel()
+    if not dora.vis_viewmodel:get() then
+        cvar.sv_competitive_minspec:set_int()
+        cvar.viewmodel_fov:set_int(68)
+        cvar.viewmodel_offset_x:set_int(0)
+        cvar.viewmodel_offset_y:set_int(0)
+        cvar.viewmodel_offset_z:set_int(0)
+        cvar.r_aspectratio:float(0)
+        return
+    end
+    cvar.sv_competitive_minspec:set_int(1)
+    cvar.viewmodel_fov:float(dora.vis_vm_fov:get())
+    cvar.viewmodel_offset_x:float(dora.vis_vm_x:get()/10)
+    cvar.viewmodel_offset_y:float(dora.vis_vm_y:get()/10)
+    cvar.viewmodel_offset_z:float(dora.vis_vm_z:get()/10)
+    cvar.r_aspectratio:float(dora.vis_vm_aspect:get()/10)
+end
+
+function dora.apply_thirdperson()
+    if dora.vis_thirdperson:get() then
+        local dist = dora.vis_thirdperson_dist:get()
+        if dora.vis_thirdperson_anim:get() then
+            -- анимация: можно реализовать через lerp, но для простоты оставляем без
+        end
+        cvar.cam_idealdist:set_int(dist)
+    else
+        cvar.cam_idealdist:set_int(70)
+    end
+end
+
+function dora.apply_aspect()
+    if dora.vis_aspect:get() then
+        cvar.r_aspectratio:float(dora.vis_aspect_value:get()/25)
+    else
+        cvar.r_aspectratio:float(0)
+    end
+end
+
+function dora.animation_breaker()
+    if not dora.vis_anim:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    local ground = dora.vis_anim_ground:get()
+    local air = dora.vis_anim_air:get()
+    if ground == "Static" then
+        entity.set_prop(lp, "m_flPoseParameter", 1, 1)
+        local leg = ui.find("Aimbot", "Anti Aim", "Other", "Leg movement")
+        if leg then leg:override("Always slide") end
+    elseif ground == "Jitter" then
+        local val = (globals.tickcount % 4 > 1) and dora.vis_anim_value:get()/10 or 0
+        entity.set_prop(lp, "m_flPoseParameter", val, 1)
+    end
+    if air == "Static" then
+        entity.set_prop(lp, "m_flPoseParameter", 1, 6)
+    end
+    if dora.vis_anim_addons:get("Earthquake") then
+        local state = dora.get_player_state()
+        local active = false
+        if dora.vis_anim_eq_state:get("Running") and state == "Running" then active = true end
+        if dora.vis_anim_eq_state:get("Air") and state == "Air" then active = true end
+        if dora.vis_anim_eq_state:get("Air-C") and state == "Air Crouching" then active = true end
+        if active then
+            local mag = dora.vis_anim_eq_magnitude:get()/100
+            local idxs = dora.vis_anim_eq_indexes:get()
+            for _, idx in ipairs(idxs) do
+                local val = math.random(-mag*10, mag*10)/10
+                entity.set_prop(lp, "m_flPoseParameter", val, idx)
+            end
+        end
+    end
+end
+
+-- ======================================================================
+-- 21. WEAPON-SPECIFIC HITCHANCE
+-- ======================================================================
+function dora.apply_weapon_hc()
+    if not dora.weapon_hc_enable:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    local weapon = lp:get_player_weapon()
+    if not weapon then return end
+    local class = entity.get_classname(weapon)
+    local hc = 0
+    if class == "CWeaponSSG08" then
+        hc = dora.weapon_scout_hit:get()
+        if not lp:get_prop("m_bIsScoped") then hc = dora.weapon_scout_noscope:get() end
+        if bit.band(lp.m_fFlags, 1) == 0 then hc = dora.weapon_scout_air:get() end
+    elseif class == "CWeaponAWP" then
+        hc = dora.weapon_awp_hit:get()
+        if not lp:get_prop("m_bIsScoped") then hc = dora.weapon_awp_noscope:get() end
+        if bit.band(lp.m_fFlags, 1) == 0 then hc = dora.weapon_awp_air:get() end
+    elseif class:find("SCAR") or class:find("G3SG1") then
+        hc = dora.weapon_auto_hit:get()
+        if not lp:get_prop("m_bIsScoped") then hc = dora.weapon_auto_noscope:get() end
+        if bit.band(lp.m_fFlags, 1) == 0 then hc = dora.weapon_auto_air:get() end
+    elseif class:find("Shotgun") then
+        hc = dora.weapon_shotgun_hit:get()
+        if not lp:get_prop("m_bIsScoped") then hc = dora.weapon_shotgun_noscope:get() end
+        if bit.band(lp.m_fFlags, 1) == 0 then hc = dora.weapon_shotgun_air:get() end
+    end
+    local hc_elem = ui.find("Aimbot", "Ragebot", "Selection", "Min. Hit Chance")
+    if hc_elem then
+        if hc > 0 then hc_elem:override(hc)
+        else hc_elem:override() end
+    end
+end
+
+-- ======================================================================
+-- 22. ОСТАЛЬНЫЕ MISC ФУНКЦИИ
+-- ======================================================================
+function dora.fast_ladder(cmd)
+    if not dora.misc_fast_ladder:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    if entity.get_prop(lp, "m_MoveType") == 9 then
+        if cmd.forwardmove > 0 then
+            cmd.pitch = 89
+            cmd.in_moveleft = 0
+            cmd.in_moveright = 1
+            cmd.in_forward = 0
+            cmd.in_back = 1
+            if cmd.sidemove == 0 then cmd.yaw = cmd.yaw + 90 end
+            if cmd.sidemove < 0 then cmd.yaw = cmd.yaw + 150 end
+            if cmd.sidemove > 0 then cmd.yaw = cmd.yaw + 30 end
+        end
+        if cmd.forwardmove < 0 then
+            cmd.pitch = 89
+            cmd.in_moveleft = 1
+            cmd.in_moveright = 0
+            cmd.in_forward = 1
+            cmd.in_back = 0
+            if cmd.sidemove == 0 then cmd.yaw = cmd.yaw + 90 end
+            if cmd.sidemove > 0 then cmd.yaw = cmd.yaw + 150 end
+            if cmd.sidemove < 0 then cmd.yaw = cmd.yaw + 30 end
+        end
+    end
+end
+
+function dora.air_stop(cmd)
+    if not dora.misc_jump_scout:get() then return end
+    if not dora.misc_jump_hotkey:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    if bit.band(lp.m_fFlags, 1) == 0 then
+        if dora.misc_jump_mode:get("Distance") then
+            local target = entity.get_threat(true)
+            if target and lp:get_origin():dist(target:get_origin()) <= dora.misc_jump_distance:get() then
+                cmd.in_speed = 1
+            end
+        end
+        if dora.misc_jump_mode:get("Hitchance") then
+            local hc = dora.misc_jump_hc:get()
+            local hc_elem = ui.find("Aimbot", "Ragebot", "Selection", "Min. Hit Chance")
+            if hc_elem then
+                if hc > 0 then hc_elem:override(hc) end
+            end
+        end
+    else
+        local hc_elem = ui.find("Aimbot", "Ragebot", "Selection", "Min. Hit Chance")
+        if hc_elem then hc_elem:override() end
+    end
+end
+
+function dora.prediction_system()
+    if not dora.misc_prediction:get() then return end
+    if not dora.misc_pred_hotkey:get() then return end
+    local mode = dora.misc_pred_mode:get()
+    local interp = ({ [1]=0.018, [2]=0.026, [3]=0.031 })[mode] or 0.018
+    cvar.cl_interp:float(interp)
+    cvar.cl_interp_ratio:float(1)
+end
+
+function dora.force_baim_safe()
+    if not dora.misc_force_safety:get() then return end
+    -- Заглушка: в neverlose нет plist, поэтому функция не делает ничего
+end
+
+function dora.disable_buybot()
+    if not dora.misc_disable_buybot:get() then return end
+    local lp = entity.get_local_player()
+    if not lp then return end
+    local buybot = ui.find("Miscellaneous", "Main", "BuyBot", "Enabled")
+    if buybot then
+        if lp.m_iAccount <= dora.misc_buybot_money:get() then
+            buybot:override(false)
+        else
+            buybot:override()
+        end
+    end
+end
+
+function dora.unsafe_charge()
+    if dora.misc_unsafe_charge:get() then
+        -- заглушка
+    end
+end
+
+function dora.fixed_hideshots()
+    if dora.misc_fixed_hideshots:get() then
+        -- заглушка
+    end
+end
+
+-- ======================================================================
+-- 23. ОБЪЕДИНЁННЫЕ ОБРАБОТЧИКИ (через :add, чтобы не конфликтовать)
+-- ======================================================================
+
+-- createmove
+events.createmove:add(function(cmd)
+    -- Jumpscout fix
+    if dora.jumpscout_enable:get() then
+        local lp = entity.get_local_player()
+        if lp then
+            local vel = lp.m_vecVelocity
+            local speed = math.sqrt(vel.x^2 + vel.y^2)
+            if dora.autostrafe_ref then
+                dora.autostrafe_ref:override(math.floor(speed) > 15)
+            end
+        end
+    else
+        if dora.autostrafe_ref then dora.autostrafe_ref:override(false) end
+    end
+
+    dora.apply_aa()
+    dora.apply_fakelag()
+    dora.fast_ladder(cmd)
+    dora.air_stop(cmd)
+    dora.prediction_system()
+    dora.force_baim_safe()
+    dora.disable_buybot()
+    dora.unsafe_charge()
+    dora.fixed_hideshots()
+end)
+
+-- render
+events.render:add(function()
+    dora.screen = render.screen_size()
+    -- Клан-теги
+    if dora.dynamic_enable:get() then
+        dora.update_dynamic_frames()
+        local tag = dora.get_frame(dora.dynamic_frames)
+        if tag then dora.set_clan_tag(tag) end
+    elseif dora.clantag_enable:get() then
+        dora.update_static_frames()
+        local tag = dora.get_frame(dora.static_frames)
+        if tag then dora.set_clan_tag(tag) end
+    else
+        if dora.last_clantag and dora.last_clantag ~= "" then dora.set_clan_tag("") end
+    end
+
+    -- Хитлог
+    if #dora.hitlog > 0 then
+        if globals.tickcount >= dora.hitlog[1][2] then
+            if dora.hitlog[1][3] > 0 then dora.hitlog[1][3] = dora.hitlog[1][3] - 20
+            else table.remove(dora.hitlog, 1) end
+        end
+        if #dora.hitlog > 6 then table.remove(dora.hitlog, 1) end
+        if not globals.is_connected then dora.hitlog = {} end
+        for i = 1, #dora.hitlog do
+            local txt = dora.hitlog[i][1]
+            local sz = render.measure_text(1, nil, txt).x
+            local sz2 = render.measure_text(1, nil, "[dora.lua] ").x
+            if dora.hitlog[i][3] < 255 then dora.hitlog[i][3] = dora.hitlog[i][3] + 10 end
+            if dora.hitlog_pos:get('Screen middle') then
+                local bx = dora.screen.x/2 - sz/2
+                local by = dora.screen.y/1.5 + 15*i
+                local off = dora.hitlog[i][3] / 35
+                local offy = dora.hitlog[i][3] / 45
+                local pref = "[dora.lua]"
+                local at = dora.hitlog_anim:get()
+                if at == 'None' then
+                    render.text(1, vector(bx+sz2, by), color(255,255,255, dora.hitlog[i][3]), nil, txt)
+                    render.text(1, vector(bx, by), color(dora.hitlog_color:get().r, dora.hitlog_color:get().g, dora.hitlog_color:get().b, dora.hitlog[i][3]), nil, pref)
+                elseif at == 'X +' then
+                    render.text(1, vector(bx+off+sz2, by), color(255,255,255, dora.hitlog[i][3]), nil, txt)
+                    render.text(1, vector(bx+off, by), color(dora.hitlog_color:get().r, dora.hitlog_color:get().g, dora.hitlog_color:get().b, dora.hitlog[i][3]), nil, pref)
+                elseif at == 'X -' then
+                    render.text(1, vector(bx-off+sz2, by), color(255,255,255, dora.hitlog[i][3]), nil, txt)
+                    render.text(1, vector(bx-off, by), color(dora.hitlog_color:get().r, dora.hitlog_color:get().g, dora.hitlog_color:get().b, dora.hitlog[i][3]), nil, pref)
+                elseif at == 'Y +' then
+                    render.text(1, vector(bx+sz2, by+offy), color(255,255,255, dora.hitlog[i][3]), nil, txt)
+                    render.text(1, vector(bx, by+offy), color(dora.hitlog_color:get().r, dora.hitlog_color:get().g, dora.hitlog_color:get().b, dora.hitlog[i][3]), nil, pref)
+                elseif at == 'Y -' then
+                    render.text(1, vector(bx+sz2, by-offy), color(255,255,255, dora.hitlog[i][3]), nil, txt)
+                    render.text(1, vector(bx, by-offy), color(dora.hitlog_color:get().r, dora.hitlog_color:get().g, dora.hitlog_color:get().b, dora.hitlog[i][3]), nil, pref)
+                end
+            end
+        end
+    end
+    hitlog_visibility()
+
+    -- Заголовок сайдбара хитлога
+    if dora.hitlog_title_anim:get() then
+        local a1 = math.abs(1 * math.cos(2*math.pi*(globals.curtime+1.5)/5)) * 255
+        local a2 = math.abs(1 * math.cos(2*math.pi*(globals.curtime-1.3)/5)) * 255
+        ui.sidebar(dora.gradient_text(65,255,56,a1, 25,75,220,a2, "dora.lua"), "alarm-clock")
+    else
+        ui.sidebar("dora.lua", "alarm-clock")
+    end
+
+    -- Отрисовка визуалов
+    dora.draw_crosshair()
+    dora.draw_arrows()
+    dora.draw_dt_indicator()
+    dora.draw_fl_indicator()
+    dora.draw_scope()
+    dora.draw_watermark()
+    dora.draw_keybinds()
+    dora.draw_spectators()
+    dora.draw_left_binds()
+    dora.apply_bloom()
+    dora.apply_viewmodel()
+    dora.apply_thirdperson()
+    dora.apply_aspect()
+end)
+
+-- pre_render
+events.pre_render:add(function()
+    dora.animation_breaker()
+end)
+
+-- aim_ack (хитлог + динамический счётчик + звук промаха)
+events.aim_ack:add(function(event)
+    -- хитлог
+    if dora.hitlog_enable:get() and dora.hitlog_log_aimbot:get() then
+        local target = entity.get(event.target)
+        if target then
+            local health = target["m_iHealth"]
+            local state_str = ""
+            if event.state == "spread" then state_str = "spread"
+            elseif event.state == "prediction error" then state_str = "prediction error"
+            elseif event.state == "jitter correction" then state_str = "jitter correction"
+            elseif event.state == "correction" then state_str = "resolver"
+            elseif event.state == "lagcomp failure" then state_str = "fake lag correction"
+            end
+            if event.state == nil then
+                local msg = ("Registered shot at %s's %s(%s%%) for %s (aimed: %s for %s, health remain: %s) backtrack: %s"):format(
+                    target:get_name(), hitgroup_str[event.hitgroup], event.hitchance, event.damage,
+                    hitgroup_str[event.wanted_hitgroup], event.wanted_damage, health, event.backtrack)
+                table.insert(dora.hitlog, {msg, globals.tickcount + 250, 0})
+                if dora.hitlog_console:get() then
+                    print_raw(("\a4562FF[dora.lua] \aD5D5D5[%s] " .. msg):format(dora.hitlog_id))
+                end
+                if dora.hitlog_pos:get('Left upper side') and dora.hitlog_console:get() then
+                    print_dev(("[%s] " .. msg):format(dora.hitlog_id))
+                end
+                send_to_chat(msg, "Aimbot shots")
+            else
+                local msg = ("Missed %s`s %s (dmg:%s, %s%%) due to %s | backtrack: %s"):format(
+                    target:get_name(), hitgroup_str[event.wanted_hitgroup], event.wanted_damage, event.hitchance, state_str, event.backtrack)
+                table.insert(dora.hitlog, {msg, globals.tickcount + 250, 0})
+                if dora.hitlog_console:get() then
+                    print_raw(("\a4562FF[dora.lua] \aD5D5D5[%s] " .. msg):format(dora.hitlog_id))
+                end
+                if dora.hitlog_pos:get('Left upper side') and dora.hitlog_console:get() then
+                    print_dev(("[%s] " .. msg):format(dora.hitlog_id))
+                end
+                send_to_chat(msg, "Aimbot shots")
+            end
+            dora.hitlog_id = dora.hitlog_id == 999 and 1 or dora.hitlog_id + 1
+        end
+    end
+
+    -- динамический счётчик
+    if dora.dynamic_enable:get() then
+        if event.state == nil then
+            dora.round_hits = dora.round_hits + 1
+        else
+            dora.round_misses = dora.round_misses + 1
+        end
+    end
+
+    -- звук промаха
+    if dora.vis_sound and dora.vis_sound:get() and event.state ~= nil then
+        play_sound(dora.vis_sound_miss:get(), dora.vis_sound_volume:get())
+    end
+end)
+
+-- player_hurt (хитлог + звук тазера)
+events.player_hurt:add(function(event)
+    if dora.hitlog_enable:get() and dora.hitlog_log_damage:get() then
+        local me = entity.get_local_player()
+        if me then
+            local attacker = entity.get(event.attacker, true)
+            if attacker == me then
+                local victim = entity.get(event.userid, true)
+                if victim then
+                    local weapon = event.weapon or "unknown"
+                    local dmg = event.dmg_health
+                    local health = event.health
+                    local hitgroup = hitgroup_str[event.hitgroup] or "generic"
+                    local msg = string.format("Hit %s's %s for %d damage (%d health remaining) with %s",
+                        victim:get_name(), hitgroup, dmg, health, weapon)
+                    table.insert(dora.hitlog, {msg, globals.tickcount + 250, 0})
+                    if dora.hitlog_console:get() then
+                        print_raw(("\a4562FF[dora.lua] \aD5D5D5[%s] " .. msg):format(dora.hitlog_id))
+                    end
+                    if dora.hitlog_pos:get('Left upper side') and dora.hitlog_console:get() then
+                        print_dev(("[%s] " .. msg):format(dora.hitlog_id))
+                    end
+                    send_to_chat(msg, "Damage dealt")
+                    dora.hitlog_id = dora.hitlog_id == 999 and 1 or dora.hitlog_id + 1
+                end
+            end
+        end
+    end
+
+    -- звук тазера
+    if dora.vis_sound and dora.vis_sound:get() then
+        local me = entity.get_local_player()
+        local attacker = entity.get(event.attacker, true)
+        if me and attacker == me and event.weapon == "taser" then
+            play_sound(dora.vis_sound_taser:get(), dora.vis_sound_volume:get())
+        end
+    end
+end)
+
+-- item_purchase
+events.item_purchase:add(function(event)
+    if dora.hitlog_enable:get() and dora.hitlog_log_purchases:get() then
+        local player = entity.get(event.userid, true)
+        if player then
+            local weapon = event.weapon
+            local msg = string.format("%s purchased %s", player:get_name(), weapon)
+            table.insert(dora.hitlog, {msg, globals.tickcount + 250, 0})
+            if dora.hitlog_console:get() then
+                print_raw(("\a4562FF[dora.lua] \aD5D5D5[%s] " .. msg):format(dora.hitlog_id))
+            end
+            if dora.hitlog_pos:get('Left upper side') and dora.hitlog_console:get() then
+                print_dev(("[%s] " .. msg):format(dora.hitlog_id))
+            end
+            send_to_chat(msg, "Purchases")
+            dora.hitlog_id = dora.hitlog_id == 999 and 1 or dora.hitlog_id + 1
+        end
+    end
+end)
+
+-- round_start
+events.round_start:add(function()
+    dora.round_kills = 0
+    dora.round_hits = 0
+    dora.round_misses = 0
+end)
+
+-- player_death (киллсэй, треш-ток, счётчик убийств)
+events.player_death:add(function(e)
+    if not globals.is_connected then return end
+    local me = entity.get_local_player()
+    if not me then return end
+    local victim = entity.get(e.userid, true)
+    local attacker = entity.get(e.attacker, true)
+    if not attacker or not victim then return end
+    if attacker == me then
+        dora.round_kills = dora.round_kills + 1
+        if victim ~= me then
+            if dora.killsay_switch:get() then
+                dora.send_random_quote(dora.killsay_delay:get())
+            end
+            dora.send_custom_trashtalk(victim:get_name())
+        end
+    end
+end)
+
+-- game_event (auto accept)
+events.game_event:add(function(event)
+    if not dora.autoaccept_enable:get() then return end
+    if event:GetName() == "match_found" then
+        utils.console_exec("callvote accept")
+    end
+end)
+
+-- net_update_end (обновление localplayer)
+events.net_update_end:add(function()
+    -- если нужно обновлять какие-то переменные
+end)
+
+-- shutdown (сброс)
+events.shutdown:add(function()
+    dora.set_clan_tag("")
+    if dora.name_changed then
+        common.set_name(dora.original_name)
+        dora.name_changed = false
+    end
+    if dora.autostrafe_ref then dora.autostrafe_ref:override(false) end
+    local me = entity.get_local_player()
+    if me then entity.set_prop(me, "m_clrRender", 255, 255, 255) end
+    cvar.sv_competitive_minspec:set_int()
+    cvar.viewmodel_fov:set_int(68)
+    cvar.viewmodel_offset_x:set_int(0)
+    cvar.viewmodel_offset_y:set_int(0)
+    cvar.viewmodel_offset_z:set_int(0)
+    cvar.r_aspectratio:float(0)
+    cvar.cam_idealdist:set_int(70)
+    cvar.mat_bloom_scalefactor_scalar:float()
+    cvar.mat_exposure_center_scale:float()
+    cvar.r_modelAmbientMin:float(0.05)
+    cvar.cl_interp:float(0.001)
+    cvar.cl_interp_ratio:float()
+    local overrides = {
+        "Aimbot/Anti Aim/Angles/Yaw/Hidden",
+        "Aimbot/Anti Aim/Angles/Yaw/Hidden pitch",
+        "Aimbot/Anti Aim/Angles/Yaw/Hidden yaw",
+        "Aimbot/Anti Aim/Angles/Yaw/Offset",
+        "Aimbot/Anti Aim/Angles/Yaw Base",
+        "Aimbot/Anti Aim/Angles/Pitch",
+        "Aimbot/Anti Aim/Angles/Yaw Modifier",
+        "Aimbot/Anti Aim/Angles/Yaw Modifier/Value",
+        "Aimbot/Anti Aim/Angles/Body Yaw",
+        "Aimbot/Anti Aim/Angles/Body Yaw/Left Limit",
+        "Aimbot/Anti Aim/Angles/Body Yaw/Right Limit",
+        "Aimbot/Anti Aim/Angles/Freestanding",
+        "Aimbot/Anti Aim/Fake Lag/Enabled",
+        "Aimbot/Anti Aim/Fake Lag/Amount",
+        "Aimbot/Anti Aim/Fake Lag/Variance",
+        "Aimbot/Anti Aim/Fake Lag/Limit",
+        "Aimbot/Ragebot/Main/Double Tap/Lag Options",
+        "Aimbot/Ragebot/Selection/Min. Hit Chance",
+        "Miscellaneous/Main/BuyBot/Enabled",
+        "Miscellaneous/Main/Movement/Auto Peek",
+    }
+    for _, path in ipairs(overrides) do
+        local elem = ui.find(path)
+        if elem then elem:override() end
+    end
+    local leg = ui.find("Aimbot", "Anti Aim", "Other", "Leg movement")
+    if leg then leg:override() end
+    print("[Dora Family] Скрипт выгружен, все настройки сброшены.")
+end)
+
+-- ======================================================================
+-- 24. ФИНАЛЬНОЕ СООБЩЕНИЕ
+-- ======================================================================
+print("[Dora Family] Скрипт полностью загружен. Версия 3.2.")
+print("[Dora Family] Все функции активны, конфликты устранены.")
